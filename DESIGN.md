@@ -54,7 +54,7 @@ The runnable app uses:
 - An in-process `PositionEngine` for deterministic state transitions
 - An in-memory read model for low-latency position reads
 
-The production design would evolve the same core logic into GKE sharded workers, a durable database-backed event log, Memorystore for hot reads, and a stateless Cloud Run read API.
+The production design would evolve the same core logic into AWS-hosted sharded workers, a durable database-backed event log, ElastiCache for hot reads, and a stateless read API on ECS/Fargate, Lambda, or App Runner.
 
 ## Implementation Notes
 
@@ -76,8 +76,8 @@ Local versus production responsibilities:
 
 | Concern | Local implementation | Production direction |
 | --- | --- | --- |
-| Durable event log | SQLite | Aurora/Postgres, AlloyDB, Spanner, DynamoDB, or equivalent |
-| Hot read cache | In-process `PositionEngine` maps | Redis/Memorystore/ElastiCache |
+| Durable event log | SQLite | Aurora PostgreSQL, RDS PostgreSQL, DynamoDB, or equivalent |
+| Hot read cache | In-process `PositionEngine` maps | ElastiCache Redis/Valkey |
 | Write scaling | Single process | Sharded workers by `hash(tradeId)` |
 | Read scaling | Same FastAPI app | Stateless read API plus shared cache/read projection |
 | Recovery | Replay SQLite event log | Load durable checkpoint, replay newer durable events |
@@ -135,10 +135,10 @@ Production strategy:
 
 - Shard by `tradeId`, not `instrument`.
 - Use many virtual shards, such as 128 or 256, mapped onto fewer worker pods.
-- Scale GKE workers based on shard backlog and processing lag.
+- Scale EKS/ECS worker tasks based on shard backlog and processing lag.
 - Rebalance virtual shards across workers when one worker is overloaded.
 - Avoid one global write lock; each shard should have one active writer while different shards process concurrently.
-- Use a production durable append/state store such as Aurora/Postgres, AlloyDB, Spanner, or DynamoDB instead of SQLite.
+- Use a production durable append/state store such as Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB instead of SQLite.
 - Keep reads on the in-memory/shared hot read model so dashboard traffic does not compete with ingestion writes.
 
 Why this matters:
@@ -157,7 +157,7 @@ How the runnable app handles it:
 
 Production strategy:
 
-- Store events durably in Postgres/AlloyDB/Spanner before acknowledgement.
+- Store events durably in Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB before acknowledgement.
 - Store periodic durable checkpoints per shard.
 - On restart, load the latest checkpoint and replay durable events after that checkpoint.
 - Rebuild/warm the hot cache before marking the service healthy.
@@ -181,9 +181,9 @@ How the runnable app handles it:
 Production strategy:
 
 - Write path: ingestion service plus sharded workers.
-- Hot read path: Memorystore/Redis for sub-5ms reads.
-- Durable read fallback: Firestore/Postgres read projection.
-- Read API: stateless Cloud Run service that scales independently from workers.
+- Hot read path: ElastiCache Redis/Valkey for sub-5ms reads.
+- Durable read fallback: Aurora/RDS PostgreSQL or DynamoDB read projection.
+- Read API: stateless ECS/Fargate, Lambda, or App Runner service that scales independently from workers.
 - Large books should use paginated/filtered position queries and delta updates rather than streaming the full book on every event.
 
 Why this matters:
@@ -281,7 +281,7 @@ Reads are served from an in-memory read model:
 
 This avoids scanning or locking the durable event log for every dashboard request.
 
-Production would use Memorystore for hot reads and a durable read projection in Firestore/Postgres as fallback.
+Production would use ElastiCache Redis/Valkey for hot reads and a durable read projection in Aurora/RDS PostgreSQL or DynamoDB as fallback.
 
 ## Caching Strategy
 
@@ -354,14 +354,14 @@ The database can start with logical sharding via a `shard_id` column and indexes
 ```text
 Venue gateway
   -> HTTP/gRPC ingestion service
-  -> durable event log in Postgres/AlloyDB/Spanner
-  -> GKE sharded workers keyed by hash(tradeId)
+  -> durable event log in Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB
+  -> EKS/ECS sharded workers keyed by hash(tradeId)
   -> durable checkpoints
-  -> Memorystore hot read cache
-  -> Firestore/Postgres read projection
-  -> Cloud Run stateless read API
+  -> ElastiCache Redis/Valkey hot read cache
+  -> Aurora/RDS PostgreSQL or DynamoDB read projection
+  -> stateless read API on ECS/Fargate, Lambda, or App Runner
 ```
 
-GKE is preferred for long-running sharded workers because it provides stronger control over worker lifecycle, shard ownership, and autoscaling.
+EKS is preferred for long-running sharded workers when we need strong control over worker lifecycle, shard ownership, and autoscaling. ECS/Fargate is a simpler AWS option if the worker model does not need Kubernetes-level control.
 
-Cloud Run is preferred for the read API because it is stateless, simple to operate, and scales automatically.
+ECS/Fargate, Lambda, or App Runner can host the stateless read API because the API should not own durable state. It can scale independently and read from ElastiCache first, then fall back to the durable read projection.
