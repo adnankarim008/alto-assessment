@@ -119,10 +119,17 @@ Why this satisfies the requirement:
 
 ### 2. Skewed Scalability And Hotspots
 
+Requirement target:
+
+- Baseline throughput: 1,000 events/second.
+- Peak burst: 10,000 events/second.
+- Extreme instrument skew must not cause head-of-line blocking for unrelated instruments.
+
 How the local app demonstrates the idea:
 
 - The engine state transition is deterministic and isolated by `tradeId`.
 - The SQLite event table includes a `shard_id` derived from `tradeId`, showing how production workers would claim work by shard.
+- The runnable app intentionally uses SQLite for simple local setup and correctness/recovery demonstration; it is not presented as the final production throughput store.
 
 Production strategy:
 
@@ -131,11 +138,14 @@ Production strategy:
 - Scale GKE workers based on shard backlog and processing lag.
 - Rebalance virtual shards across workers when one worker is overloaded.
 - Avoid one global write lock; each shard should have one active writer while different shards process concurrently.
+- Use a production durable append/state store such as Aurora/Postgres, AlloyDB, Spanner, or DynamoDB instead of SQLite.
+- Keep reads on the in-memory/shared hot read model so dashboard traffic does not compete with ingestion writes.
 
 Why this matters:
 
 - A hot instrument like `AAPL` should not force all `AAPL` trades through one processing lane.
 - Different trades for the same instrument can process in parallel while preserving ordering for each individual `tradeId`.
+- Horizontal shard scaling and bounded dashboard snapshots are the intended path for reaching the 1,000/sec baseline and absorbing 10,000/sec bursts in production.
 
 ### 3. Fault Tolerance And Zero-Data-Loss Recovery
 
