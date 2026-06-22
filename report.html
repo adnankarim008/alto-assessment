@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Position Engine Performance Report</title>
+    <style>
+      :root {
+        --bg: #f3f5f7;
+        --panel: #ffffff;
+        --ink: #111827;
+        --muted: #5f6b7a;
+        --line: #cfd6df;
+        --green: #137a4b;
+        --red: #b13a2f;
+        --blue: #1f4f82;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Avenir Next", "Helvetica Neue", Helvetica, sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 36px 20px 56px;
+      }
+
+      h1, h2, h3 {
+        margin: 0 0 14px;
+        letter-spacing: -0.03em;
+      }
+
+      h1 {
+        font-size: 44px;
+        color: #000000;
+      }
+
+      h2 {
+        font-size: 24px;
+        margin-top: 30px;
+      }
+
+      p {
+        margin: 0 0 14px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 22px;
+        margin-top: 18px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        background: #f8fafc;
+        padding: 16px;
+      }
+
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 28px;
+        color: #000000;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+
+      th, td {
+        border: 1px solid var(--line);
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #e9eef3;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+
+      pre {
+        background: #111827;
+        color: #f9fafb;
+        padding: 16px;
+        overflow-x: auto;
+      }
+
+      .good { color: var(--green); font-weight: 700; }
+      .warn { color: var(--red); font-weight: 700; }
+      .note { border-left: 4px solid var(--blue); padding-left: 14px; }
+
+      @media (max-width: 760px) {
+        .grid { grid-template-columns: 1fr; }
+        h1 { font-size: 34px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Position Engine Performance Report</h1>
+      <p class="muted">Local smoke-test results from the case-study implementation.</p>
+
+      <section class="panel">
+        <h2>Summary</h2>
+        <p>The local tests separate the pure in-memory position engine from the SQLite-backed durable ingestion path.</p>
+        <p class="note">The core position calculation is fast. The local bottleneck is durable persistence, specifically per-event SQLite transaction/SQL overhead. This is expected because SQLite is used for local correctness and recovery, not as the proposed production throughput store.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Measured Results</h2>
+        <div class="grid">
+          <div class="metric">
+            <span>SQLite-backed service</span>
+            <strong>~1,450 events/sec</strong>
+          </div>
+          <div class="metric">
+            <span>Engine only</span>
+            <strong>~84,065 events/sec</strong>
+          </div>
+          <div class="metric">
+            <span>Read latency</span>
+            <strong>~0.002 ms</strong>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Mode</th>
+              <th>Events</th>
+              <th>Elapsed</th>
+              <th>Throughput</th>
+              <th>Average Read Latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>SQLite-backed service</td>
+              <td>10,000</td>
+              <td>6.8968 sec</td>
+              <td>1,449.94 events/sec</td>
+              <td>0.00195 ms</td>
+            </tr>
+            <tr>
+              <td>In-memory engine only</td>
+              <td>10,000</td>
+              <td>0.1190 sec</td>
+              <td>84,065.43 events/sec</td>
+              <td>0.001399 ms</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Requirement Interpretation</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Requirement</th>
+              <th>Local Result / Design Answer</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Baseline throughput: 1,000 events/sec</td>
+              <td><span class="good">Met locally</span> by the SQLite-backed service path at approximately 1,450 events/sec in this smoke test.</td>
+            </tr>
+            <tr>
+              <td>Peak burst: 10,000 events/sec</td>
+              <td>The in-memory engine exceeds this level, but the local SQLite durable path does not. Production scaling would use a production durable store and sharded workers by <code>tradeId</code>.</td>
+            </tr>
+            <tr>
+              <td>Read latency under 5ms</td>
+              <td><span class="good">Met locally</span>; reads from the in-memory read model are far below 5ms.</td>
+            </tr>
+            <tr>
+              <td>Zero-data-loss recovery</td>
+              <td>Events are written durably before being applied to memory. On restart, the app replays the durable event log to rebuild exact state.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Profile Findings</h2>
+        <p>The most expensive operations were in the SQLite persistence path:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Cumulative Time</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>app/store.py append_event</code></td>
+              <td>6.639 sec</td>
+              <td>Durable event insert path, including duplicate check, insert, and transaction handling.</td>
+            </tr>
+            <tr>
+              <td><code>sqlite3.Connection.__exit__</code></td>
+              <td>3.312 sec</td>
+              <td>Transaction commit/cleanup for each stored event.</td>
+            </tr>
+            <tr>
+              <td><code>sqlite3.Connection.execute</code></td>
+              <td>3.140 sec</td>
+              <td>SQL statements for duplicate lookup and event insert.</td>
+            </tr>
+            <tr>
+              <td><code>app/engine.py apply_event</code></td>
+              <td>0.197 sec</td>
+              <td>Actual position state transition.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Production Scaling Conclusion</h2>
+        <p>The correct production optimization is not to hold accepted events in memory and batch them unsafely. The correct strategy is:</p>
+        <pre>durably accept events first
+process durable events by tradeId shard
+keep hot reads in a shared cache/read model
+use checkpoints to bound recovery time</pre>
+        <p>This preserves the finance-critical rule that accepted events must be recoverable, while still allowing horizontal scaling for burst traffic.</p>
+      </section>
+    </main>
+  </body>
+</html>

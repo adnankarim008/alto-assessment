@@ -168,4 +168,9 @@ tests/
   test_engine.py
   test_recovery_and_api.py
 DESIGN.md
+report.html
 ```
+
+## Performance Report
+
+`report.html` includes the local smoke-test results used to reason about throughput, read latency, and the difference between the in-memory engine path and the SQLite-backed durable path.
