@@ -134,12 +134,19 @@ How the local app demonstrates the idea:
 Production strategy:
 
 - Shard by `tradeId`, not `instrument`.
+- Put a durable AWS stream/queue between ingestion and workers to absorb bursts and provide backpressure.
 - Use many virtual shards, such as 128 or 256, mapped onto fewer worker pods.
 - Scale EKS/ECS worker tasks based on shard backlog and processing lag.
 - Rebalance virtual shards across workers when one worker is overloaded.
 - Avoid one global write lock; each shard should have one active writer while different shards process concurrently.
 - Use a production durable append/state store such as Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB instead of SQLite.
 - Keep reads on the in-memory/shared hot read model so dashboard traffic does not compete with ingestion writes.
+
+Queue/stream choice:
+
+- Preferred: Amazon Kinesis or Amazon MSK/Kafka for durable event streaming, partitioned by `tradeId` or logical `shard_id`.
+- Alternative: SQS FIFO if strict per-group ordering is needed and throughput is acceptable; message group id would be `tradeId` or `shard_id`.
+- Avoid using a queue as the only correctness mechanism. The engine still needs durable idempotency and sequence checks because AWS queues/streams can redeliver messages.
 
 Why this matters:
 
@@ -157,7 +164,8 @@ How the runnable app handles it:
 
 Production strategy:
 
-- Store events durably in Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB before acknowledgement.
+- Write accepted events to a durable stream/queue and/or durable event table before acknowledgement.
+- Persist idempotency/state in Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB before acknowledging completed processing.
 - Store periodic durable checkpoints per shard.
 - On restart, load the latest checkpoint and replay durable events after that checkpoint.
 - Rebuild/warm the hot cache before marking the service healthy.
@@ -180,7 +188,7 @@ How the runnable app handles it:
 
 Production strategy:
 
-- Write path: ingestion service plus sharded workers.
+- Write path: ingestion service, durable stream/queue, and sharded workers.
 - Hot read path: ElastiCache Redis/Valkey for sub-5ms reads.
 - Durable read fallback: Aurora/RDS PostgreSQL or DynamoDB read projection.
 - Read API: stateless ECS/Fargate, Lambda, or App Runner service that scales independently from workers.
@@ -283,6 +291,8 @@ This avoids scanning or locking the durable event log for every dashboard reques
 
 Production would use ElastiCache Redis/Valkey for hot reads and a durable read projection in Aurora/RDS PostgreSQL or DynamoDB as fallback.
 
+The production write path would include an AWS queue/stream between ingestion and processing. This isolates external traffic from the position workers and gives the system a place to absorb bursts without dropping accepted events.
+
 ## Caching Strategy
 
 The local implementation uses the `PositionEngine` in-memory maps as the hot read cache:
@@ -322,6 +332,7 @@ Recommended production cache pattern:
 
 AWS services that fit this:
 
+- Kinesis, MSK/Kafka, or SQS FIFO/standard for ingestion buffering and backpressure.
 - ElastiCache Redis/Valkey for the hot position cache.
 - Aurora Postgres or DynamoDB for durable state/read projection.
 - EKS/ECS for write workers.
@@ -349,11 +360,14 @@ Each shard has one active writer at a time. Independent shards process concurren
 
 The database can start with logical sharding via a `shard_id` column and indexes. Physical database sharding is only needed later if volume requires it.
 
+The queue/stream should use the same logical partitioning key as the worker model. In practice this means partitioning by `tradeId` or by a precomputed `shard_id = hash(tradeId) % shard_count`, so events for the same trade are routed to the same ordered processing lane.
+
 ## Production Architecture
 
 ```text
 Venue gateway
   -> HTTP/gRPC ingestion service
+  -> durable stream/queue in Kinesis, MSK/Kafka, or SQS FIFO
   -> durable event log in Aurora PostgreSQL, RDS PostgreSQL, or DynamoDB
   -> EKS/ECS sharded workers keyed by hash(tradeId)
   -> durable checkpoints
@@ -365,3 +379,5 @@ Venue gateway
 EKS is preferred for long-running sharded workers when we need strong control over worker lifecycle, shard ownership, and autoscaling. ECS/Fargate is a simpler AWS option if the worker model does not need Kubernetes-level control.
 
 ECS/Fargate, Lambda, or App Runner can host the stateless read API because the API should not own durable state. It can scale independently and read from ElastiCache first, then fall back to the durable read projection.
+
+The queue/stream does not remove the need for idempotency. Kinesis, MSK/Kafka, and SQS commonly operate with at-least-once delivery, so duplicate handling by `eventId`, payload-hash conflict detection, and per-`tradeId` sequence ordering remain required.
